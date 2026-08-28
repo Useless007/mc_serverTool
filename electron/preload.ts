@@ -35,6 +35,17 @@ const electronAPI = {
   getServerTypes: () => ipcRenderer.invoke('get-server-types'),
   getServerTypeStatus: () => ipcRenderer.invoke('get-server-type-status'),
   getJavaInfo: () => ipcRenderer.invoke('get-java-info'),
+  installJava: () => ipcRenderer.invoke('install-java'),
+  onJavaInstallProgress: (
+    callback: (progress: { status: string; percent: number; error?: string }) => void
+  ) => {
+    const listener = (
+      _e: Electron.IpcRendererEvent,
+      progress: { status: string; percent: number; error?: string }
+    ) => callback(progress)
+    ipcRenderer.on('java-install-progress', listener)
+    return () => ipcRenderer.removeListener('java-install-progress', listener)
+  },
 
   // Config
   getServerConfig: () => ipcRenderer.invoke('get-server-config'),
@@ -58,6 +69,39 @@ const electronAPI = {
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   getServerDir: () => ipcRenderer.invoke('get-server-dir'),
   setServerDir: (dir: string) => ipcRenderer.invoke('set-server-dir', dir),
+
+  // Servers (multi-server registry + history)
+  getServers: () => ipcRenderer.invoke('get-servers'),
+  removeServer: (id: string) => ipcRenderer.invoke('remove-server', id),
+  setActiveServer: (id: string) => ipcRenderer.invoke('set-active-server', id),
+  getActiveServer: () => ipcRenderer.invoke('get-active-server'),
+
+  // Ngrok tunnel
+  getNgrokStatus: () => ipcRenderer.invoke('ngrok-get-status'),
+  setNgrokToken: (token: string) => ipcRenderer.invoke('ngrok-set-token', token),
+  startNgrok: () => ipcRenderer.invoke('ngrok-start'),
+  stopNgrok: () => ipcRenderer.invoke('ngrok-stop'),
+  onNgrokStatusChanged: (callback: (status: unknown) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, status: unknown) => callback(status)
+    ipcRenderer.on('ngrok-status-changed', listener)
+    return () => ipcRenderer.removeListener('ngrok-status-changed', listener)
+  },
+
+  // Cloudflare tunnel
+  getCfStatus: () => ipcRenderer.invoke('cf-get-status'),
+  setCfToken: (token: string) => ipcRenderer.invoke('cf-set-token', token),
+  startCfTunnel: () => ipcRenderer.invoke('cf-start'),
+  stopCfTunnel: () => ipcRenderer.invoke('cf-stop'),
+  onCfStatusChanged: (callback: (status: unknown) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, status: unknown) => callback(status)
+    ipcRenderer.on('cf-status-changed', listener)
+    return () => ipcRenderer.removeListener('cf-status-changed', listener)
+  },
+
+  // Plugin search (Spiget + Modrinth)
+  searchPlugins: (query: string, limit?: number) => ipcRenderer.invoke('search-plugins', query, limit),
+  installRemotePlugin: (source: string, id: string) =>
+    ipcRenderer.invoke('install-remote-plugin', { source, id }),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

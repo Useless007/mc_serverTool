@@ -29,6 +29,10 @@ interface ElectronAPI {
   getServerTypes(): Promise<Array<{ type: string; label: string; versions: string[] }>>
   getServerTypeStatus(): Promise<Array<{ type: string; online: boolean }>>
   getJavaInfo(): Promise<{ version: string; path: string }>
+  installJava(): Promise<{ success: boolean; path?: string; error?: string }>
+  onJavaInstallProgress(
+    callback: (progress: { status: string; percent: number; error?: string }) => void
+  ): () => void
 
   // Config
   getServerConfig(): Promise<Record<string, string>>
@@ -52,6 +56,96 @@ interface ElectronAPI {
   selectDirectory(): Promise<string | null>
   getServerDir(): Promise<string>
   setServerDir(dir: string): Promise<{ success: boolean }>
+
+  // Servers (multi-server registry + history)
+  getServers(): Promise<
+    Array<{
+      id: string
+      name: string
+      dir: string
+      type: string
+      version: string
+      createdAt: string
+      lastUsedAt: string
+    }>
+  >
+  removeServer(id: string): Promise<{ success: boolean; error?: string }>
+  setActiveServer(id: string): Promise<{ success: boolean; error?: string }>
+  getActiveServer(): Promise<{
+    id: string
+    name: string
+    dir: string
+    type: string
+    version: string
+    createdAt: string
+    lastUsedAt: string
+  } | null>
+
+  // Ngrok tunnel
+  getNgrokStatus(): Promise<{
+    running: boolean
+    url: string | null
+    error: string | null
+    startedAt: number | null
+    tokenConfigured: boolean
+    binaryAvailable: boolean
+  }>
+  setNgrokToken(token: string): Promise<{ success: boolean; error?: string }>
+  startNgrok(): Promise<{ success: boolean; error?: string }>
+  stopNgrok(): Promise<{ success: boolean }>
+  onNgrokStatusChanged(
+    callback: (status: {
+      running: boolean
+      url: string | null
+      error: string | null
+      startedAt: number | null
+      tokenConfigured: boolean
+      binaryAvailable: boolean
+    }) => void
+  ): () => void
+
+  // Cloudflare tunnel
+  getCfStatus(): Promise<{
+    running: boolean
+    url: string | null
+    error: string | null
+    startedAt: number | null
+    tokenConfigured: boolean
+    binaryAvailable: boolean
+  }>
+  setCfToken(token: string): Promise<{ success: boolean; error?: string }>
+  startCfTunnel(): Promise<{ success: boolean; error?: string }>
+  stopCfTunnel(): Promise<{ success: boolean }>
+  onCfStatusChanged(
+    callback: (status: {
+      running: boolean
+      url: string | null
+      error: string | null
+      startedAt: number | null
+      tokenConfigured: boolean
+      binaryAvailable: boolean
+    }) => void
+  ): () => void
+
+  // Plugin search (Spiget + Modrinth)
+  searchPlugins(
+    query: string,
+    limit?: number
+  ): Promise<
+    Array<{
+      source: 'spiget' | 'modrinth'
+      id: string
+      name: string
+      description: string
+      author: string
+      downloads: number
+      iconUrl: string | null
+    }>
+  >
+  installRemotePlugin(
+    source: string,
+    id: string
+  ): Promise<{ success: boolean; error?: string; name?: string }>
 }
 
 interface Window {

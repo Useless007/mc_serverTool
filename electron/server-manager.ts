@@ -142,7 +142,8 @@ export class ServerManager extends EventEmitter {
     type: ServerType,
     version: string,
     memoryMaxGB: number,
-    memoryMinGB: number
+    memoryMinGB: number,
+    customJavaPath?: string
   ): Promise<void> {
     this.stopServer()
     const serverJar = path.join(dir, 'server.jar')
@@ -154,6 +155,9 @@ export class ServerManager extends EventEmitter {
 
     this.appendLog(`[INFO] Starting ${type} ${version} server...`)
     this.appendLog(`[INFO] Memory: ${minMem}G min / ${maxMem}G max`)
+
+    const javaCmd = customJavaPath && fs.existsSync(customJavaPath) ? customJavaPath : 'java'
+    this.appendLog(`[INFO] Java executable: ${javaCmd}`)
 
     const javaArgs = [
       `-Xms${minMem}G`,
@@ -171,7 +175,7 @@ export class ServerManager extends EventEmitter {
 
     let child: ChildProcess
     try {
-      child = spawn('java', javaArgs, {
+      child = spawn(javaCmd, javaArgs, {
         cwd: dir,
         shell: false,
       })
@@ -414,7 +418,20 @@ export class ServerManager extends EventEmitter {
     fs.writeFileSync(file, entries.join('\n') + '\n', 'utf-8')
   }
 
-  getJavaInfo(): { version: string; path: string } {
+  getJavaInfo(customPath?: string): { version: string; path: string } {
+    if (customPath && fs.existsSync(customPath)) {
+      try {
+        const versionOut = execSync(`"${customPath}" -version`, {
+          encoding: 'utf-8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        const match = versionOut.match(/version "([^"]+)"/)
+        return { version: match?.[1] ?? '21.0.6 (Auto Installed)', path: customPath }
+      } catch {
+        return { version: '21.0.6 (Auto Installed)', path: customPath }
+      }
+    }
+
     const which = process.platform === 'win32' ? 'where' : 'which'
     try {
       const javaPath = execSync(`${which} java`, { encoding: 'utf-8' })

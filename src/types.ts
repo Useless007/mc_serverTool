@@ -30,3 +30,32 @@ export interface DownloadProgress {
   version: string
   percent: number
 }
+
+export interface ServerProfile {
+  id: string
+  name: string
+  dir: string
+  type: string
+  version: string
+  createdAt: string
+  lastUsedAt: string
+}
+
+export interface TunnelStatus {
+  running: boolean
+  url: string | null
+  error: string | null
+  startedAt: number | null
+  tokenConfigured: boolean
+  binaryAvailable: boolean
+}
+
+export interface PluginSearchResult {
+  source: 'spiget' | 'modrinth'
+  id: string
+  name: string
+  description: string
+  author: string
+  downloads: number
+  iconUrl: string | null
+}

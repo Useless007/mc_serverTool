@@ -5,9 +5,42 @@ import {
   ServerManager,
   ServerType,
 } from './server-manager'
+import { Store } from './store'
+import { NgrokManager } from './ngrok'
+import { CloudflareTunnelManager } from './cloudflare-tunnel'
+import { searchPlugins, resolvePluginJar } from './plugin-search'
+import { JavaInstaller } from './java-installer'
 
 const serverManager = new ServerManager()
+const store = new Store(app.getPath('userData'))
+const javaInstaller = new JavaInstaller(app.getPath('userData'))
+const ngrokManager = new NgrokManager({
+  userDataPath: app.getPath('userData'),
+  getPort: () => getServerPort(),
+  onStatus: (status) => sendToRenderer('ngrok-status-changed', status),
+  initialTokenConfigured: store.getNgrokToken() !== '',
+})
+const cfManager = new CloudflareTunnelManager({
+  userDataPath: app.getPath('userData'),
+  getPort: () => getServerPort(),
+  onStatus: (status) => sendToRenderer('cf-status-changed', status),
+  onTunnelState: (state) => store.setCfTunnel(state),
+  initialTunnel: store.getCfTunnel(),
+})
 let mainWindow: BrowserWindow | null = null
+
+/** Port the active server listens on (from server.properties, default 25565). */
+function getServerPort(): number {
+  try {
+    const dir = serverManager.getServerDir()
+    if (!dir) return 25565
+    const config = serverManager.readServerConfig(dir)
+    const port = Number(config['server-port'])
+    return Number.isFinite(port) && port > 0 ? port : 25565
+  } catch {
+    return 25565
+  }
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -84,13 +117,15 @@ function registerIpcHandlers(): void {
     const dir = serverManager.getServerDir()
     if (!dir) return { success: false, error: 'No server directory selected' }
     const status = serverManager.getStatus()
+    const customJava = javaInstaller.getCustomJavaPath() ?? undefined
     try {
       await serverManager.startServer(
         dir,
         (status.serverType ?? 'vanilla') as ServerType,
         status.version ?? '1.20.4',
         opts?.memoryMax ?? 4,
-        opts?.memoryMin ?? 2
+        opts?.memoryMin ?? 2,
+        customJava
       )
       return { success: true }
     } catch (err) {
@@ -129,6 +164,14 @@ function registerIpcHandlers(): void {
       // Persist type/version so start-server knows what to run
       const metaFile = path.join(dir, 'server-meta.json')
       fs.writeFileSync(metaFile, JSON.stringify({ type, version }), 'utf-8')
+      // Register in the multi-server history and make it active
+      const profile = store.addServer({
+        name: path.basename(dir) || 'Minecraft Server',
+        dir,
+        type,
+        version,
+      })
+      store.setActiveServer(profile.id)
       return { success: true }
     } catch (err) {
       return { success: false, error: (err as Error).message }
@@ -233,7 +276,123 @@ function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('get-java-info', () => serverManager.getJavaInfo())
+  ipcMain.handle('get-java-info', () => {
+    const customJava = javaInstaller.getCustomJavaPath() ?? undefined
+    return serverManager.getJavaInfo(customJava)
+  })
+
+  ipcMain.handle('install-java', async () => {
+    try {
+      const installedPath = await javaInstaller.installJava((progress) => {
+        sendToRenderer('java-install-progress', progress)
+      })
+      return { success: true, path: installedPath }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
+    }
+  })
+
+  // ---------- Multi-server registry / history ----------
+  ipcMain.handle('get-servers', () => store.getServers())
+
+  ipcMain.handle('get-active-server', () => store.getActiveServer())
+
+  ipcMain.handle('set-active-server', (_e, id: string) => {
+    const profile = store.setActiveServer(id)
+    if (!profile) return { success: false, error: 'Server not found' }
+    serverManager.setServerDir(profile.dir)
+    serverManager.restoreMeta((profile.type as ServerType) || 'vanilla', profile.version)
+    return { success: true }
+  })
+
+  ipcMain.handle('remove-server', (_e, id: string) => {
+    const removed = store.removeServer(id)
+    if (!removed) return { success: false, error: 'Server not found' }
+    const next = store.getActiveServer()
+    if (next) {
+      serverManager.setServerDir(next.dir)
+      serverManager.restoreMeta((next.type as ServerType) || 'vanilla', next.version)
+    } else {
+      serverManager.setServerDir('')
+    }
+    return { success: true }
+  })
+
+  // ---------- ngrok tunnel ----------
+  ipcMain.handle('ngrok-get-status', () => ngrokManager.getStatus())
+
+  ipcMain.handle('ngrok-set-token', async (_e, token: string) => {
+    try {
+      await ngrokManager.setToken(token)
+      store.setNgrokToken(token)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('ngrok-start', async () => {
+    try {
+      await ngrokManager.start()
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('ngrok-stop', async () => {
+    await ngrokManager.stop()
+    return { success: true }
+  })
+
+  // ---------- Cloudflare tunnel ----------
+  ipcMain.handle('cf-get-status', () => cfManager.getStatus())
+
+  ipcMain.handle('cf-set-token', async (_e, token: string) => {
+    try {
+      await cfManager.setToken(token)
+      store.setCfToken(token)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('cf-start', async () => {
+    try {
+      await cfManager.start()
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('cf-stop', async () => {
+    await cfManager.stop()
+    return { success: true }
+  })
+
+  // ---------- Plugin search (Spiget + Modrinth) ----------
+  ipcMain.handle('search-plugins', async (_e, query: string, limit?: number) => {
+    if (!query || query.trim().length < 2) return []
+    try {
+      return await searchPlugins(query.trim(), limit ?? 20)
+    } catch (err) {
+      throw new Error((err as Error).message)
+    }
+  })
+
+  ipcMain.handle('install-remote-plugin', async (_e, opts: { source: 'spiget' | 'modrinth'; id: string }) => {
+    const dir = serverManager.getServerDir()
+    if (!dir) return { success: false, error: 'No server directory selected' }
+    try {
+      const jar = await resolvePluginJar(opts.source, opts.id)
+      await serverManager.installPlugin(dir, jar.url)
+      return { success: true, name: jar.name }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
+    }
+  })
 }
 
 app.whenReady().then(() => {

@@ -6,9 +6,10 @@ import Settings from './components/Settings'
 import Plugins from './components/Plugins'
 import FileManager from './components/FileManager'
 import CreateServer from './components/CreateServer'
+import NetworkTunnels from './components/NetworkTunnels'
 import type { ServerStatus } from './types'
 
-export type TabKey = 'dashboard' | 'console' | 'settings' | 'plugins' | 'files'
+export type TabKey = 'dashboard' | 'console' | 'settings' | 'plugins' | 'files' | 'tunnels'
 
 export default function App() {
   const [tab, setTab] = useState<TabKey>('dashboard')
@@ -64,6 +65,7 @@ export default function App() {
         serverVersion={status.version}
         running={status.running}
         onCreateServer={() => setShowCreate(true)}
+        onServerSwitched={refreshAll}
       />
       <main className="flex-1 overflow-y-auto p-6">
         {tab === 'dashboard' && (
@@ -73,6 +75,7 @@ export default function App() {
         {tab === 'settings' && <Settings onRefresh={refreshAll} />}
         {tab === 'plugins' && <Plugins />}
         {tab === 'files' && <FileManager />}
+        {tab === 'tunnels' && <NetworkTunnels />}
       </main>
 
       <CreateServer
