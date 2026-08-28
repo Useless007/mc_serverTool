@@ -22,6 +22,10 @@
   <a href="#-building-for-production">Build</a>
 </p>
 
+<p align="center">
+  🌏 <a href="README.th.md"><strong>อ่านเป็นภาษาไทย</strong></a>
+</p>
+
 </div>
 
 <br />
