@@ -1,6 +1,7 @@
-import { spawn, ChildProcess, execSync } from 'child_process'
+import { spawn, spawnSync, ChildProcess } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+import crypto from 'crypto'
 import { EventEmitter } from 'events'
 
 export type ServerType = 'vanilla' | 'paper' | 'spigot' | 'craftbukkit'
@@ -91,12 +92,16 @@ export const SERVER_TYPES_LABELS: Record<ServerType, string> = {
   craftbukkit: 'CraftBukkit',
 }
 
+const PLUGIN_NAME = /^[A-Za-z0-9._-]+\.jar$/
+const LINEBREAK = new RegExp('[' + String.fromCharCode(13, 10) + ']')
+
 export class ServerManager extends EventEmitter {
   private process: ChildProcess | null = null
   private serverDir: string = ''
   private serverType: ServerType | null = null
   private serverVersion: string | null = null
   private startedAt: number = 0
+  private memoryMaxGB: number = 4
   private consoleBuffer: string[] = []
   private readonly maxBufferLines = 4000
 
@@ -112,9 +117,14 @@ export class ServerManager extends EventEmitter {
     this.serverDir = dir
   }
 
-  restoreMeta(type: ServerType, version: string): void {
+  restoreMeta(type: ServerType, version: string, memoryMaxGB?: number): void {
     this.serverType = type
     this.serverVersion = version
+    if (memoryMaxGB && memoryMaxGB > 0) this.memoryMaxGB = Math.floor(memoryMaxGB)
+  }
+
+  getMemoryMax(): number {
+    return this.memoryMaxGB
   }
 
   getStatus(): ServerStatus {
@@ -145,7 +155,9 @@ export class ServerManager extends EventEmitter {
     memoryMinGB: number,
     customJavaPath?: string
   ): Promise<void> {
-    this.stopServer()
+    // Must await: without it a second java process is spawned on the same
+    // world directory while the first is still shutting down.
+    await this.stopServer()
     const serverJar = path.join(dir, 'server.jar')
     if (!fs.existsSync(serverJar)) {
       throw new Error('server.jar not found. Please download the server first.')
@@ -306,8 +318,17 @@ export class ServerManager extends EventEmitter {
   // ---------- Downloads ----------
 
   async downloadServer(type: ServerType, version: string, destDir: string): Promise<void> {
-    const url = await this.resolveDownloadUrl(type, version)
+    // `version` is interpolated into a URL below; without this check the
+    // renderer could point the download at any path on the CDN host.
+    const known = SERVER_TYPES.find((t) => t.type === type)
+    if (!known) throw new Error(`Unknown server type: ${type}`)
+    if (!known.versions.includes(version)) {
+      throw new Error(`Unknown ${known.label} version: ${version}`)
+    }
+
+    const { url, sha1 } = await this.resolveDownloadUrl(type, version)
     const target = path.join(destDir, 'server.jar')
+    const partial = `${target}.part`
     fs.mkdirSync(destDir, { recursive: true })
 
     this.appendLog(`[INFO] Downloading ${type} ${version}...`)
@@ -325,30 +346,70 @@ export class ServerManager extends EventEmitter {
     const reader = res.body?.getReader()
     if (!reader) throw new Error('Failed to read download stream')
 
-    const ws = fs.createWriteStream(target)
-    const chunks: Buffer[] = []
+    // Download to a .part file and only swap it in on success, so a failed or
+    // interrupted download can never destroy a working server.jar.
+    const ws = fs.createWriteStream(partial)
+    // Attach before any await: an unhandled 'error' on a write stream is a
+    // hard crash of the main process, not a rejected promise.
+    let streamError: Error | null = null
+    ws.on('error', (err: Error) => {
+      streamError = streamError ?? err
+    })
+    const hash = sha1 ? crypto.createHash('sha1') : null
     let received = 0
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (value) {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!value) continue
         received += value.byteLength
-        chunks.push(Buffer.from(value))
+        hash?.update(value)
+        if (!ws.write(Buffer.from(value))) {
+          await new Promise<void>((r) => ws.once('drain', r))
+        }
         if (total > 0) {
-          const pct = Math.round((received / total) * 100)
-          this.emit('download-progress', { type, version, percent: pct })
+          this.emit('download-progress', {
+            type,
+            version,
+            percent: Math.round((received / total) * 100),
+          })
         }
       }
+      await new Promise<void>((resolve) => ws.end(() => resolve()))
+      if (streamError) throw streamError
+    } catch (err) {
+      ws.destroy()
+      fs.rmSync(partial, { force: true })
+      throw err
     }
-    const buf = Buffer.concat(chunks)
-    ws.write(buf)
-    await new Promise<void>((r) => ws.end(() => r()))
 
+    if (received === 0) {
+      fs.rmSync(partial, { force: true })
+      throw new Error('Download produced an empty file')
+    }
+
+    // This jar gets executed by `java -jar`. Mojang publishes a sha1 for it -
+    // verify rather than trusting whatever came down the wire.
+    if (hash && sha1) {
+      const actual = hash.digest('hex')
+      if (actual !== sha1) {
+        fs.rmSync(partial, { force: true })
+        throw new Error(
+          `Checksum mismatch for ${type} ${version} - download rejected (expected ${sha1}, got ${actual})`
+        )
+      }
+      this.appendLog('[INFO] Checksum verified (sha1)')
+    }
+
+    fs.renameSync(partial, target)
     this.emit('download-progress', { type, version, percent: 100 })
-    this.appendLog(`[INFO] Downloaded server.jar (${(buf.length / 1024 / 1024).toFixed(1)} MB)`)
+    this.appendLog(`[INFO] Downloaded server.jar (${(received / 1024 / 1024).toFixed(1)} MB)`)
   }
 
-  private async resolveDownloadUrl(type: ServerType, version: string): Promise<string> {
+  private async resolveDownloadUrl(
+    type: ServerType,
+    version: string
+  ): Promise<{ url: string; sha1?: string }> {
     switch (type) {
       case 'vanilla': {
         const manifestRes = await fetch('https://launchermeta.mojang.com/mc/game/version_manifest.json')
@@ -360,8 +421,10 @@ export class ServerManager extends EventEmitter {
         if (!entry) throw new Error(`Version ${version} not found in Mojang manifest`)
         const vRes = await fetch(entry.url)
         if (!vRes.ok) throw new Error(`Failed to fetch version info for ${version}`)
-        const vData = (await vRes.json()) as { downloads: { server: { url: string } } }
-        return vData.downloads.server.url
+        const vData = (await vRes.json()) as {
+          downloads: { server: { url: string; sha1?: string } }
+        }
+        return { url: vData.downloads.server.url, sha1: vData.downloads.server.sha1 }
       }
       case 'paper': {
         // v3 of the PaperMC API: returns array of builds, newest first.
@@ -378,14 +441,15 @@ export class ServerManager extends EventEmitter {
         if (!latest) throw new Error(`No Paper builds found for ${version}`)
         const dl = latest.downloads['server:default']
         if (!dl?.url) throw new Error(`No Paper download available for ${version}`)
-        return dl.url
+        return { url: dl.url }
       }
       case 'spigot': {
-        // getbukkit.org serves release jars from this stable CDN endpoint
-        return `https://cdn.getbukkit.org/spigot/spigot-${version}.jar`
+        // getbukkit.org serves release jars from this stable CDN endpoint.
+        // No checksum is published for these - see AGENT.md "Known gaps".
+        return { url: `https://cdn.getbukkit.org/spigot/spigot-${version}.jar` }
       }
       case 'craftbukkit': {
-        return `https://cdn.getbukkit.org/craftbukkit/craftbukkit-${version}.jar`
+        return { url: `https://cdn.getbukkit.org/craftbukkit/craftbukkit-${version}.jar` }
       }
     }
   }
@@ -413,6 +477,12 @@ export class ServerManager extends EventEmitter {
     const file = path.join(dir, 'server.properties')
     const entries: string[] = []
     for (const [key, value] of Object.entries(config)) {
+      // A line break in a value (e.g. motd) would inject extra properties
+      // lines - "hi<LF>enable-rcon=true<LF>rcon.password=x" would silently
+      // open a remote console on the next restart.
+      if (LINEBREAK.test(key) || LINEBREAK.test(String(value))) {
+        throw new Error(`Illegal line break in server.properties entry: ${key}`)
+      }
       entries.push(`${key}=${value}`)
     }
     fs.writeFileSync(file, entries.join('\n') + '\n', 'utf-8')
@@ -433,16 +503,16 @@ export class ServerManager extends EventEmitter {
     }
 
     const which = process.platform === 'win32' ? 'where' : 'which'
-    try {
-      const javaPath = execSync(`${which} java`, { encoding: 'utf-8' })
-        .split(/\r?\n/)[0]
-        .trim()
-      const versionOut = execSync('java -version', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
-      const match = versionOut.match(/version "([^"]+)"/)
-      return { version: match?.[1] ?? 'unknown', path: javaPath }
-    } catch {
-      return { version: 'Not found', path: '' }
-    }
+    const locate = spawnSync(which, ['java'], { encoding: 'utf-8' })
+    if (locate.status !== 0) return { version: 'Not found', path: '' }
+    const javaPath = (locate.stdout || '').trim().split(LINEBREAK)[0].trim()
+
+    // `java -version` writes to stderr, not stdout - read both so the version
+    // is found regardless of which stream the installed JDK uses.
+    const probe = spawnSync('java', ['-version'], { encoding: 'utf-8' })
+    const output = `${probe.stdout ?? ''}${probe.stderr ?? ''}`
+    const match = output.match(/version "([^"]+)"/)
+    return { version: match?.[1] ?? 'unknown', path: javaPath }
   }
 
   // ---------- Plugins ----------
@@ -461,10 +531,25 @@ export class ServerManager extends EventEmitter {
   }
 
   async installPlugin(dir: string, url: string): Promise<void> {
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      throw new Error('Invalid plugin URL')
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error('Plugin URL must be http(s)')
+    }
+
+    const filename = path.basename(parsed.pathname)
+    if (!PLUGIN_NAME.test(filename)) {
+      throw new Error('Plugin URL must point directly at a .jar file')
+    }
+
     const pluginsDir = path.join(dir, 'plugins')
     fs.mkdirSync(pluginsDir, { recursive: true })
-    const filename = path.basename(new URL(url).pathname) || `plugin-${Date.now()}.jar`
-    const target = path.join(pluginsDir, filename)
+    // Route through resolvePath so a crafted filename cannot escape plugins/.
+    const target = this.resolvePath(pluginsDir, filename)
 
     const res = await fetch(url, { redirect: 'follow' })
     if (!res.ok) throw new Error(`Plugin download failed: ${res.status}`)
@@ -473,15 +558,22 @@ export class ServerManager extends EventEmitter {
   }
 
   deletePlugin(dir: string, name: string): void {
-    const target = path.join(dir, 'plugins', name)
+    // Reject anything that is not a plain jar filename rather than silently
+    // normalising it away - a traversal attempt should be a visible error.
+    if (!PLUGIN_NAME.test(name)) throw new Error(`Invalid plugin name: ${name}`)
+    const target = this.resolvePath(path.join(dir, 'plugins'), name)
     if (fs.existsSync(target)) fs.unlinkSync(target)
   }
 
   // ---------- File management ----------
 
   private resolvePath(dir: string, subpath: string): string {
-    const base = path.resolve(dir)
-    const target = path.resolve(base, subpath || '.')
+    // path.resolve is purely lexical, so a symlink/junction inside the server
+    // directory would pass the prefix check while pointing anywhere on disk.
+    // Compare real paths so the containment check actually holds.
+    const base = fs.existsSync(dir) ? fs.realpathSync(path.resolve(dir)) : path.resolve(dir)
+    const lexical = path.resolve(base, subpath || '.')
+    const target = fs.existsSync(lexical) ? fs.realpathSync(lexical) : lexical
     if (!target.startsWith(base + path.sep) && target !== base) {
       throw new Error('Path escapes server directory')
     }
