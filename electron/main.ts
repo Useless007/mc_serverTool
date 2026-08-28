@@ -18,7 +18,7 @@ const ngrokManager = new NgrokManager({
   userDataPath: app.getPath('userData'),
   getPort: () => getServerPort(),
   onStatus: (status) => sendToRenderer('ngrok-status-changed', status),
-  initialTokenConfigured: store.getNgrokToken() !== '',
+  initialTokenConfigured: store.isNgrokConfigured(),
 })
 const cfManager = new CloudflareTunnelManager({
   userDataPath: app.getPath('userData'),
@@ -40,6 +40,25 @@ function getServerPort(): number {
   } catch {
     return 25565
   }
+}
+
+/**
+ * A tunnel makes the server reachable from the whole internet. With
+ * online-mode=false and no whitelist, anyone who has the address can join
+ * under any username - including the owner's, inheriting their op level.
+ */
+function publicExposureBlocker(): string | null {
+  const dir = serverManager.getServerDir()
+  if (!dir) return null
+  const config = serverManager.readServerConfig(dir)
+  if (config['online-mode'] === 'false' && config['white-list'] !== 'true') {
+    return (
+      'Refusing to expose this server publicly: online-mode=false with no whitelist means ' +
+      'anyone with the address can join as any username, including yours. ' +
+      'Turn on online-mode, or set white-list=true in Settings, then try again.'
+    )
+  }
+  return null
 }
 
 function createWindow(): void {
@@ -195,8 +214,6 @@ function registerIpcHandlers(): void {
       }
     }
   )
-    }
-  )
 
   ipcMain.handle('get-server-types', () => serverManager.getServerTypes())
 
@@ -344,7 +361,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle('ngrok-set-token', async (_e, token: string) => {
     try {
       await ngrokManager.setToken(token)
-      store.setNgrokToken(token)
+      // Only the flag is persisted - the token itself stays in memory.
+      store.setNgrokConfigured(true)
       return { success: true }
     } catch (err) {
       return { success: false, error: (err as Error).message }
@@ -352,6 +370,8 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('ngrok-start', async () => {
+    const blocked = publicExposureBlocker()
+    if (blocked) return { success: false, error: blocked }
     try {
       await ngrokManager.start()
       return { success: true }
@@ -370,8 +390,9 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('cf-set-token', async (_e, token: string) => {
     try {
+      // Deliberately not persisted: a Cloudflare *account* API token is far more
+      // sensitive than the tunnel token, and nothing ever read it back.
       await cfManager.setToken(token)
-      store.setCfToken(token)
       return { success: true }
     } catch (err) {
       return { success: false, error: (err as Error).message }
@@ -379,6 +400,8 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('cf-start', async () => {
+    const blocked = publicExposureBlocker()
+    if (blocked) return { success: false, error: blocked }
     try {
       await cfManager.start()
       return { success: true }
@@ -481,6 +504,9 @@ app.on('before-quit', (event) => {
     } catch {
       /* ignore */
     }
+    // Tunnels are separate child processes. Without this they survive the app
+    // and keep the server exposed to the internet with no UI left to stop them.
+    await Promise.allSettled([ngrokManager.stop(), cfManager.stop()])
     try {
       await serverManager.stopServer()
     } catch {

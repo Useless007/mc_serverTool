@@ -67,6 +67,7 @@ export class NgrokManager {
   private readonly onStatus: (status: TunnelStatus) => void
   private child: ChildProcess | null = null
   private binaryPath: string | null = null
+  private token: string | null = null
   private logLines: string[] = []
   private status: TunnelStatus
 
@@ -159,7 +160,15 @@ export class NgrokManager {
       }
       await execFileAsync(
         'powershell.exe',
-        ['-NoProfile', '-Command', `Expand-Archive -LiteralPath '${archive}' -DestinationPath '${dir}' -Force`],
+        [
+          '-NoProfile',
+          '-Command',
+          '& { param($a,$d) Expand-Archive -LiteralPath $a -DestinationPath $d -Force }',
+          '-a',
+          archive,
+          '-d',
+          dir,
+        ],
         { timeout: 120000, windowsHide: true }
       )
     } else {
@@ -167,17 +176,19 @@ export class NgrokManager {
     }
   }
 
+  /**
+   * Held in memory and passed to the child via NGROK_AUTHTOKEN.
+   * `ngrok config add-authtoken <token>` would put the secret on the command
+   * line, where any other process on the machine can read it (ps / procfs /
+   * Win32_Process.CommandLine).
+   */
   async setToken(token: string): Promise<void> {
-    const bin = await this.ensureBinary()
-    try {
-      await execFileAsync(bin, ['config', 'add-authtoken', token], {
-        timeout: 30000,
-        windowsHide: true,
-      })
-    } catch (err) {
-      const e = err as { stderr?: string; message?: string }
-      throw new Error(e.stderr?.trim() || e.message || 'Failed to set ngrok authtoken')
+    const trimmed = token.trim()
+    if (!/^[A-Za-z0-9_]{20,}$/.test(trimmed)) {
+      throw new Error('That does not look like an ngrok authtoken')
     }
+    await this.ensureBinary()
+    this.token = trimmed
     this.status.tokenConfigured = true
     this.emit()
   }
@@ -186,15 +197,18 @@ export class NgrokManager {
     if (this.status.running) return
 
     const bin = await this.ensureBinary()
-    if (!this.status.tokenConfigured) throw new Error('ngrok authtoken not configured')
+    if (!this.token) throw new Error('ngrok authtoken not configured')
 
     const port = Number(await this.getPort())
     if (!Number.isFinite(port) || port <= 0) throw new Error(`Invalid server port: ${port}`)
 
     const child = spawn(
       bin,
-      ['tcp', String(port), '--log', 'stdout', '-log-level=info', '--log-format=json'],
-      { windowsHide: true }
+      ['tcp', String(port), '--log', 'stdout', '--log-level', 'info', '--log-format', 'json'],
+      {
+        windowsHide: true,
+        env: { ...process.env, NGROK_AUTHTOKEN: this.token ?? '' },
+      }
     )
     this.child = child
     this.status.running = true

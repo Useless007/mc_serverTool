@@ -44,6 +44,35 @@ interface ModrinthVersion {
   files?: ModrinthVersionFile[]
 }
 
+const SPIGET_ID = /^[0-9]+$/
+const MODRINTH_ID = /^[A-Za-z0-9]+$/
+
+/**
+ * Hosts a plugin jar may actually be served from. Spiget resources can declare
+ * an *external* download link, so the redirect target is attacker-chosen unless
+ * it is checked here.
+ */
+const ALLOWED_JAR_HOSTS = new Set([
+  'api.spiget.org',
+  'www.spigotmc.org',
+  'spigotmc.org',
+  'cdn.modrinth.com',
+])
+
+function assertAllowedJarUrl(raw: string, base: string): string {
+  const target = new URL(raw, base)
+  if (target.protocol !== 'https:') {
+    throw new Error(`Plugin download must use https (got ${target.protocol})`)
+  }
+  if (!ALLOWED_JAR_HOSTS.has(target.hostname)) {
+    throw new Error(
+      `Plugin download host not allowed: ${target.hostname}. ` +
+        'Install it with the direct-URL field if you trust this source.'
+    )
+  }
+  return target.toString()
+}
+
 async function searchSpiget(query: string, limit: number): Promise<PluginSearchResult[]> {
   const res = await fetch(
     `${SPIGET_BASE}/search/resources/${encodeURIComponent(query)}?field=name&size=${limit}`,
@@ -122,9 +151,10 @@ export async function resolvePluginJar(
 }
 
 async function resolveSpigetJar(id: string): Promise<{ name: string; url: string }> {
+  if (!SPIGET_ID.test(id)) throw new Error(`Invalid Spiget resource id: ${id}`)
   let versionLabel = ''
   try {
-    const res = await fetch(`${SPIGET_BASE}/resources/${id}/versions/latest`, {
+    const res = await fetch(`${SPIGET_BASE}/resources/${encodeURIComponent(id)}/versions/latest`, {
       signal: AbortSignal.timeout(15000),
     })
     if (res.ok) {
@@ -135,7 +165,7 @@ async function resolveSpigetJar(id: string): Promise<{ name: string; url: string
     // Version lookup is best-effort; fall back to the generic name.
   }
 
-  const downloadUrl = `${SPIGET_BASE}/resources/${id}/download`
+  const downloadUrl = `${SPIGET_BASE}/resources/${encodeURIComponent(id)}/download`
   const res = await fetch(downloadUrl, {
     redirect: 'manual',
     signal: AbortSignal.timeout(15000),
@@ -146,9 +176,11 @@ async function resolveSpigetJar(id: string): Promise<{ name: string; url: string
   if ([301, 302, 303, 307, 308].includes(res.status)) {
     const location = res.headers.get('location')
     if (location) {
-      url = location
+      url = assertAllowedJarUrl(location, downloadUrl)
+      // Decode first, then basename. The other order lets an encoded traversal
+      // ("%2e%2e%2f") survive basename() and turn back into "../" afterwards.
       try {
-        filename = decodeURIComponent(path.basename(new URL(location).pathname))
+        filename = path.basename(decodeURIComponent(new URL(url).pathname))
       } catch {
         // Unparseable location; keep the generic name.
       }
@@ -160,7 +192,8 @@ async function resolveSpigetJar(id: string): Promise<{ name: string; url: string
 }
 
 async function resolveModrinthJar(id: string): Promise<{ name: string; url: string }> {
-  const res = await fetch(`${MODRINTH_BASE}/project/${id}/version`, {
+  if (!MODRINTH_ID.test(id)) throw new Error(`Invalid Modrinth project id: ${id}`)
+  const res = await fetch(`${MODRINTH_BASE}/project/${encodeURIComponent(id)}/version`, {
     headers: { 'User-Agent': USER_AGENT },
     signal: AbortSignal.timeout(10000),
   })
@@ -173,5 +206,5 @@ async function resolveModrinthJar(id: string): Promise<{ name: string; url: stri
   const version = compatible ?? versions[0]
   const file = version?.files?.[0]
   if (!version || !file) throw new Error('No compatible plugin version found')
-  return { name: file.filename, url: file.url }
+  return { name: file.filename, url: assertAllowedJarUrl(file.url, MODRINTH_BASE) }
 }
