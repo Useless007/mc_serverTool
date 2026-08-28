@@ -18,7 +18,7 @@ const ngrokManager = new NgrokManager({
   userDataPath: app.getPath('userData'),
   getPort: () => getServerPort(),
   onStatus: (status) => sendToRenderer('ngrok-status-changed', status),
-  initialTokenConfigured: store.getNgrokToken() !== '',
+  initialTokenConfigured: store.isNgrokConfigured(),
 })
 const cfManager = new CloudflareTunnelManager({
   userDataPath: app.getPath('userData'),
@@ -40,6 +40,25 @@ function getServerPort(): number {
   } catch {
     return 25565
   }
+}
+
+/**
+ * A tunnel makes the server reachable from the whole internet. With
+ * online-mode=false and no whitelist, anyone who has the address can join
+ * under any username - including the owner's, inheriting their op level.
+ */
+function publicExposureBlocker(): string | null {
+  const dir = serverManager.getServerDir()
+  if (!dir) return null
+  const config = serverManager.readServerConfig(dir)
+  if (config['online-mode'] === 'false' && config['white-list'] !== 'true') {
+    return (
+      'Refusing to expose this server publicly: online-mode=false with no whitelist means ' +
+      'anyone with the address can join as any username, including yours. ' +
+      'Turn on online-mode, or set white-list=true in Settings, then try again.'
+    )
+  }
+  return null
 }
 
 function createWindow(): void {
@@ -65,6 +84,15 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
+
+  // This window only ever renders local app content. Deny popups and any
+  // navigation away from it so a malicious link/MOTD can never take it over.
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const devUrl = process.env.VITE_DEV_SERVER_URL
+    if (url.startsWith('file://') || (devUrl && url.startsWith(devUrl))) return
+    event.preventDefault()
+  })
 
   mainWindow.on('closed', () => {
     mainWindow = null
@@ -96,11 +124,6 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('get-server-dir', () => serverManager.getServerDir())
 
-  ipcMain.handle('set-server-dir', (_e, dir: string) => {
-    serverManager.setServerDir(dir)
-    return { success: true }
-  })
-
   ipcMain.handle('select-directory', async () => {
     const options: Electron.OpenDialogOptions = {
       properties: ['openDirectory', 'createDirectory'],
@@ -124,8 +147,8 @@ function registerIpcHandlers(): void {
         dir,
         (status.serverType ?? 'vanilla') as ServerType,
         status.version ?? '1.20.4',
-        opts?.memoryMax ?? 4,
-        opts?.memoryMin ?? 2,
+        opts?.memoryMax ?? serverManager.getMemoryMax(),
+        opts?.memoryMin ?? Math.max(1, Math.floor((opts?.memoryMax ?? serverManager.getMemoryMax()) / 2)),
         customJava
       )
       return { success: true }
@@ -156,28 +179,41 @@ function registerIpcHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle('download-server', async (_e, type: ServerType, version: string) => {
-    const dir = serverManager.getServerDir()
-    if (!dir) return { success: false, error: 'No server directory selected' }
-    try {
-      await serverManager.downloadServer(type, version, dir)
-      serverManager.setServerDir(dir)
-      // Persist type/version so start-server knows what to run
-      const metaFile = path.join(dir, 'server-meta.json')
-      fs.writeFileSync(metaFile, JSON.stringify({ type, version }), 'utf-8')
-      // Register in the multi-server history and make it active
-      const profile = store.addServer({
-        name: path.basename(dir) || 'Minecraft Server',
-        dir,
-        type,
-        version,
-      })
-      store.setActiveServer(profile.id)
-      return { success: true }
-    } catch (err) {
-      return { success: false, error: (err as Error).message }
+  ipcMain.handle(
+    'download-server',
+    async (_e, type: ServerType, version: string, memoryMaxGB?: number) => {
+      const dir = serverManager.getServerDir()
+      if (!dir) return { success: false, error: 'No server directory selected' }
+      try {
+        await serverManager.downloadServer(type, version, dir)
+        // Apply immediately - without this the UI and the next start-server call
+        // keep using stale (or default) type/version until the app restarts.
+        serverManager.restoreMeta(type, version, memoryMaxGB)
+        const metaFile = path.join(dir, 'server-meta.json')
+        fs.writeFileSync(
+          metaFile,
+          JSON.stringify({ type, version, memoryMaxGB: serverManager.getMemoryMax() }),
+          'utf-8'
+        )
+        // Register in the multi-server history and make it active. Re-download
+        // into a directory that is already registered must update that profile,
+        // not append a duplicate entry to the sidebar.
+        const existing = store.getServers().find((s) => path.resolve(s.dir) === path.resolve(dir))
+        const profile = existing
+          ? store.updateServer(existing.id, { type, version })
+          : store.addServer({
+              name: path.basename(dir) || 'Minecraft Server',
+              dir,
+              type,
+              version,
+            })
+        if (profile) store.setActiveServer(profile.id)
+        return { success: true }
+      } catch (err) {
+        return { success: false, error: (err as Error).message }
+      }
     }
-  })
+  )
 
   ipcMain.handle('get-server-types', () => serverManager.getServerTypes())
 
@@ -325,7 +361,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle('ngrok-set-token', async (_e, token: string) => {
     try {
       await ngrokManager.setToken(token)
-      store.setNgrokToken(token)
+      // Only the flag is persisted - the token itself stays in memory.
+      store.setNgrokConfigured(true)
       return { success: true }
     } catch (err) {
       return { success: false, error: (err as Error).message }
@@ -333,6 +370,8 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('ngrok-start', async () => {
+    const blocked = publicExposureBlocker()
+    if (blocked) return { success: false, error: blocked }
     try {
       await ngrokManager.start()
       return { success: true }
@@ -351,8 +390,9 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('cf-set-token', async (_e, token: string) => {
     try {
+      // Deliberately not persisted: a Cloudflare *account* API token is far more
+      // sensitive than the tunnel token, and nothing ever read it back.
       await cfManager.setToken(token)
-      store.setCfToken(token)
       return { success: true }
     } catch (err) {
       return { success: false, error: (err as Error).message }
@@ -360,6 +400,8 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('cf-start', async () => {
+    const blocked = publicExposureBlocker()
+    if (blocked) return { success: false, error: blocked }
     try {
       await cfManager.start()
       return { success: true }
@@ -421,9 +463,10 @@ function loadServerMeta(): void {
     const meta = JSON.parse(fs.readFileSync(metaFile, 'utf-8')) as {
       type: ServerType
       version: string
+      memoryMaxGB?: number
     }
     if (meta.type && meta.version) {
-      serverManager.restoreMeta(meta.type, meta.version)
+      serverManager.restoreMeta(meta.type, meta.version, meta.memoryMaxGB)
     }
   } catch {
     /* ignore corrupt meta */
@@ -444,14 +487,31 @@ try {
   /* ignore */
 }
 
-app.on('before-quit', () => {
-  try {
-    const dir = serverManager.getServerDir()
-    if (dir) {
-      fs.writeFileSync(cacheFile, JSON.stringify({ dir }), 'utf-8')
+// Killing java outright can lose unsaved chunks. Hold the quit, send `stop`,
+// and let the server flush the world before the app actually exits.
+let shuttingDown = false
+app.on('before-quit', (event) => {
+  if (shuttingDown) return
+  shuttingDown = true
+  event.preventDefault()
+
+  void (async () => {
+    try {
+      const dir = serverManager.getServerDir()
+      if (dir) {
+        fs.writeFileSync(cacheFile, JSON.stringify({ dir }), 'utf-8')
+      }
+    } catch {
+      /* ignore */
     }
-    serverManager.killServer()
-  } catch {
-    /* ignore */
-  }
+    // Tunnels are separate child processes. Without this they survive the app
+    // and keep the server exposed to the internet with no UI left to stop them.
+    await Promise.allSettled([ngrokManager.stop(), cfManager.stop()])
+    try {
+      await serverManager.stopServer()
+    } catch {
+      await serverManager.killServer()
+    }
+    app.quit()
+  })()
 })

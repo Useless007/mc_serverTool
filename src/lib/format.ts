@@ -50,31 +50,3 @@ export function colorizeLogLine(line: string): { text: string; color: string } {
   }
   return { text: line, color: 'text-zinc-400' }
 }
-
-export const BOOLEAN_KEYS = new Set([
-  'allow-flight',
-  'allow-nether',
-  'broadcast-console-to-ops',
-  'broadcast-rcon-to-ops',
-  'enable-command-block',
-  'enable-jmx-monitoring',
-  'enable-query',
-  'enable-rcon',
-  'enforce-secure-profile',
-  'enforce-whitelist',
-  'entity-broadcast-range-percentage',
-  'force-gamemode',
-  'generate-structures',
-  'hardcore',
-  'hide-online-players',
-  'online-mode',
-  'pvp',
-  'prevent-proxy-connections',
-  'spawn-animals',
-  'spawn-monsters',
-  'spawn-npcs',
-  'spawn-protection',
-  'sync-chunk-writes',
-  'use-native-transport',
-  'white-list',
-])

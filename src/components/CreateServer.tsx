@@ -86,7 +86,7 @@ export default function CreateServer({
     setDownloading(true)
     setError('')
     try {
-      const res = await window.electronAPI.downloadServer(type, version)
+      const res = await window.electronAPI.downloadServer(type, version, Number(memory) || 4)
       if (res.success) {
         setSuccess(true)
         onDone()

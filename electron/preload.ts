@@ -30,8 +30,8 @@ const electronAPI = {
   },
 
   // Server setup
-  downloadServer: (type: string, version: string) =>
-    ipcRenderer.invoke('download-server', type, version),
+  downloadServer: (type: string, version: string, memoryMaxGB?: number) =>
+    ipcRenderer.invoke('download-server', type, version, memoryMaxGB),
   getServerTypes: () => ipcRenderer.invoke('get-server-types'),
   getServerTypeStatus: () => ipcRenderer.invoke('get-server-type-status'),
   getJavaInfo: () => ipcRenderer.invoke('get-java-info'),
@@ -68,7 +68,6 @@ const electronAPI = {
   // Directory
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   getServerDir: () => ipcRenderer.invoke('get-server-dir'),
-  setServerDir: (dir: string) => ipcRenderer.invoke('set-server-dir', dir),
 
   // Servers (multi-server registry + history)
   getServers: () => ipcRenderer.invoke('get-servers'),

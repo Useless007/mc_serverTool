@@ -25,7 +25,11 @@ interface ElectronAPI {
   ): () => void
 
   // Server setup
-  downloadServer(type: string, version: string): Promise<{ success: boolean; error?: string }>
+  downloadServer(
+    type: string,
+    version: string,
+    memoryMaxGB?: number
+  ): Promise<{ success: boolean; error?: string }>
   getServerTypes(): Promise<Array<{ type: string; label: string; versions: string[] }>>
   getServerTypeStatus(): Promise<Array<{ type: string; online: boolean }>>
   getJavaInfo(): Promise<{ version: string; path: string }>
@@ -55,7 +59,6 @@ interface ElectronAPI {
   // Directory
   selectDirectory(): Promise<string | null>
   getServerDir(): Promise<string>
-  setServerDir(dir: string): Promise<{ success: boolean }>
 
   // Servers (multi-server registry + history)
   getServers(): Promise<
