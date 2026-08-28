@@ -27,6 +27,7 @@ interface ElectronAPI {
   // Server setup
   downloadServer(type: string, version: string): Promise<{ success: boolean; error?: string }>
   getServerTypes(): Promise<Array<{ type: string; label: string; versions: string[] }>>
+  getServerTypeStatus(): Promise<Array<{ type: string; online: boolean }>>
   getJavaInfo(): Promise<{ version: string; path: string }>
 
   // Config

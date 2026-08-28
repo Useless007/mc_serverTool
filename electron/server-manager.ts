@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { EventEmitter } from 'events'
 
-export type ServerType = 'vanilla' | 'paper' | 'spigot'
+export type ServerType = 'vanilla' | 'paper' | 'spigot' | 'craftbukkit'
 
 export interface ServerStatus {
   running: boolean
@@ -32,24 +32,33 @@ export interface ServerConfig {
 }
 
 const VANILLA_VERSIONS = [
-  '1.21.4', '1.21.3', '1.21.1', '1.21',
+  '26.2', '26.1.2', '26.1.1', '26.1',
+  '1.21.11', '1.21.10', '1.21.9', '1.21.8', '1.21.7', '1.21.6', '1.21.5', '1.21.4', '1.21.3', '1.21.2', '1.21.1', '1.21',
   '1.20.6', '1.20.4', '1.20.2', '1.20.1',
   '1.19.4', '1.19.2', '1.18.2', '1.17.1',
   '1.16.5', '1.15.2', '1.12.2',
 ]
 
 const PAPER_VERSIONS = [
-  '1.21.4', '1.21.3', '1.21.1', '1.21',
-  '1.20.6', '1.20.4', '1.20.2', '1.20.1',
+  '26.2', '26.1.2', '26.1.1',
+  '1.21.11', '1.21.10', '1.21.9', '1.21.8', '1.21.7', '1.21.6', '1.21.5', '1.21.4', '1.21.3', '1.21.1', '1.21',
+  '1.20.6', '1.20.5', '1.20.4', '1.20.2', '1.20.1', '1.20',
   '1.19.4', '1.19.2', '1.18.2', '1.17.1',
-  '1.16.5',
+  '1.16.5', '1.12.2', '1.8.8',
 ]
 
 const SPIGOT_VERSIONS = [
-  '1.21.4', '1.21.3', '1.21.1', '1.21',
+  '1.21.11', '1.21.10', '1.21.8', '1.21.5', '1.21.4', '1.21.3', '1.21.1',
   '1.20.6', '1.20.4', '1.20.2', '1.20.1',
   '1.19.4', '1.19.2', '1.18.2', '1.17.1',
-  '1.16.5',
+  '1.16.5', '1.15.2', '1.12.2',
+]
+
+const CRAFTBUKKIT_VERSIONS = [
+  '1.21.11', '1.21.10', '1.21.8', '1.21.5', '1.21.4', '1.21.3', '1.21.1',
+  '1.20.6', '1.20.4', '1.20.2', '1.20.1',
+  '1.19.4', '1.19.2', '1.18.2', '1.17.1',
+  '1.16.5', '1.15.2', '1.12.2',
 ]
 
 const SERVER_TYPES: ServerTypeInfo[] = [
@@ -68,12 +77,18 @@ const SERVER_TYPES: ServerTypeInfo[] = [
     label: 'Spigot',
     versions: SPIGOT_VERSIONS,
   },
+  {
+    type: 'craftbukkit',
+    label: 'CraftBukkit',
+    versions: CRAFTBUKKIT_VERSIONS,
+  },
 ]
 
 export const SERVER_TYPES_LABELS: Record<ServerType, string> = {
   vanilla: 'Vanilla',
   paper: 'Paper',
   spigot: 'Spigot',
+  craftbukkit: 'CraftBukkit',
 }
 
 export class ServerManager extends EventEmitter {
@@ -262,6 +277,28 @@ export class ServerManager extends EventEmitter {
     return SERVER_TYPES
   }
 
+  async checkServerTypeApis(): Promise<Array<{ type: ServerType; online: boolean }>> {
+    const endpoints: Record<ServerType, string> = {
+      vanilla: 'https://launchermeta.mojang.com/mc/game/version_manifest.json',
+      paper: 'https://fill.papermc.io/v3/projects/paper/versions',
+      spigot: 'https://cdn.getbukkit.org/spigot/spigot-1.21.4.jar',
+      craftbukkit: 'https://cdn.getbukkit.org/craftbukkit/craftbukkit-1.21.4.jar',
+    }
+    const checks = (Object.keys(endpoints) as ServerType[]).map(async (type) => {
+      try {
+        const res = await fetch(endpoints[type], {
+          method: 'HEAD',
+          redirect: 'follow',
+          signal: AbortSignal.timeout(8000),
+        })
+        return { type, online: res.ok }
+      } catch {
+        return { type, online: false }
+      }
+    })
+    return Promise.all(checks)
+  }
+
   // ---------- Downloads ----------
 
   async downloadServer(type: ServerType, version: string, destDir: string): Promise<void> {
@@ -323,19 +360,28 @@ export class ServerManager extends EventEmitter {
         return vData.downloads.server.url
       }
       case 'paper': {
-        const api = `https://api.papermc.io/v2/projects/paper/versions/${version}/builds`
+        // v3 of the PaperMC API: returns array of builds, newest first.
+        // Each build carries a direct "server:default" download URL.
+        const api = `https://fill.papermc.io/v3/projects/paper/versions/${version}/builds`
         const res = await fetch(api)
         if (!res.ok) throw new Error(`Paper API error: ${res.status} for version ${version}`)
-        const data = (await res.json()) as {
-          builds: Array<{ build: number; downloads: { application: { name: string } } }>
-        }
-        const latest = data.builds[data.builds.length - 1]
+        const builds = (await res.json()) as Array<{
+          id: number
+          channel: string
+          downloads: { 'server:default'?: { name: string; url: string } }
+        }>
+        const latest = builds.find((b) => b.channel === 'STABLE') ?? builds[0]
         if (!latest) throw new Error(`No Paper builds found for ${version}`)
-        return `https://api.papermc.io/v2/projects/paper/versions/${version}/builds/${latest.build}/downloads/${latest.downloads.application.name}`
+        const dl = latest.downloads['server:default']
+        if (!dl?.url) throw new Error(`No Paper download available for ${version}`)
+        return dl.url
       }
       case 'spigot': {
-        // getbukkit.org serves release jars at this stable endpoint
-        return `https://download.getbukkit.org/spigot/spigot-${version}.jar`
+        // getbukkit.org serves release jars from this stable CDN endpoint
+        return `https://cdn.getbukkit.org/spigot/spigot-${version}.jar`
+      }
+      case 'craftbukkit': {
+        return `https://cdn.getbukkit.org/craftbukkit/craftbukkit-${version}.jar`
       }
     }
   }

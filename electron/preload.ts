@@ -33,6 +33,7 @@ const electronAPI = {
   downloadServer: (type: string, version: string) =>
     ipcRenderer.invoke('download-server', type, version),
   getServerTypes: () => ipcRenderer.invoke('get-server-types'),
+  getServerTypeStatus: () => ipcRenderer.invoke('get-server-type-status'),
   getJavaInfo: () => ipcRenderer.invoke('get-java-info'),
 
   // Config

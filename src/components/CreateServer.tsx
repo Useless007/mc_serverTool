@@ -28,6 +28,7 @@ const TYPE_DESCRIPTIONS: Record<string, string> = {
   vanilla: 'Official Mojang server. Most stable, no plugins.',
   paper: 'High-performance fork with plugin & optimization support.',
   spigot: 'Popular fork with plugin support.',
+  craftbukkit: 'Original Bukkit server with plugin support.',
 }
 
 const STEP_LABELS = ['Type', 'Version', 'Memory']
@@ -41,6 +42,7 @@ export default function CreateServer({
 }: CreateServerProps) {
   const [step, setStep] = useState(0)
   const [types, setTypes] = useState<ServerTypeInfo[]>([])
+  const [apiOnline, setApiOnline] = useState<Record<string, boolean>>({})
   const [type, setType] = useState<string>('')
   const [version, setVersion] = useState<string>('')
   const [memory, setMemory] = useState('4')
@@ -58,7 +60,16 @@ export default function CreateServer({
     setError('')
     setSuccess(false)
     setProgress(0)
+    setApiOnline({})
     window.electronAPI.getServerTypes().then(setTypes).catch(() => {})
+    window.electronAPI
+      .getServerTypeStatus()
+      .then((statuses) => {
+        const map: Record<string, boolean> = {}
+        for (const s of statuses) map[s.type] = s.online
+        setApiOnline(map)
+      })
+      .catch(() => {})
   }, [open])
 
   useEffect(() => {
@@ -146,7 +157,18 @@ export default function CreateServer({
                   )}
                 >
                   <div className="flex items-center justify-between">
-                    <p className="font-semibold">{t.label}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-semibold">{t.label}</p>
+                      {apiOnline[t.type] !== undefined && (
+                        apiOnline[t.type] ? (
+                          <Badge className="border-transparent bg-emerald-500/15 text-emerald-400">
+                            API Online
+                          </Badge>
+                        ) : (
+                          <Badge variant="destructive">API Offline</Badge>
+                        )
+                      )}
+                    </div>
                     {type === t.type && <Badge>Selected</Badge>}
                   </div>
                   <p className="mt-1 text-sm text-muted-foreground">

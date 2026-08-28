@@ -137,6 +137,8 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('get-server-types', () => serverManager.getServerTypes())
 
+  ipcMain.handle('get-server-type-status', () => serverManager.checkServerTypeApis())
+
   ipcMain.handle('get-server-config', () => {
     const dir = serverManager.getServerDir()
     if (!dir) return {}
