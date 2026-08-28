@@ -39,6 +39,26 @@ Stack: React 18 + TypeScript + Vite 7 + Tailwind v4 + shadcn/ui + electron-build
 - ห้ามใช้ `dangerouslySetInnerHTML` หรือ `eval` ที่ไหนก็ตาม — log จาก Minecraft server คือ untrusted input
 - ห้าม hardcode token / API key / password ลงในโค้ด
 
+### 2.1.1 Secrets — ngrok / Cloudflare token (เพิ่มหลังมีฟีเจอร์ tunnel)
+
+- ห้ามส่ง token เป็น **command-line argument** เด็ดขาด (`--token`, `add-authtoken <token>`)
+  argv ของโปรเซสที่รันอยู่ โปรเซสอื่นในเครื่องอ่านได้หมด (`ps`, `/proc/<pid>/cmdline`,
+  `Get-CimInstance Win32_Process`) → ต้องส่งผ่าน **env** เท่านั้น (`NGROK_AUTHTOKEN`, `TUNNEL_TOKEN`)
+- ห้ามเก็บ **Cloudflare account API token** ลงดิสก์ มันคือ credential ของทั้งบัญชี ไม่ใช่แค่ tunnel
+  เก็บไว้ใน memory พอ ให้ผู้ใช้กรอกใหม่หลังเปิดแอป
+- ห้ามเก็บ ngrok authtoken ลงดิสก์ เก็บแค่ flag `ngrokConfigured: boolean`
+- `manager-state.json` มี tunnel token อยู่ → ต้อง `mode: 0o600` เสมอ ห้ามลดสิทธิ์กลับ
+- ห้ามส่ง token กลับไปฝั่ง renderer ไม่ว่ากรณีใด `TunnelStatus` ส่งได้แค่ `tokenConfigured: boolean`
+- ห้าม log token ลง console buffer หรือ `pushLog()`
+
+### 2.1.2 Public exposure — tunnel เปิดเซิร์ฟให้คนทั้งอินเทอร์เน็ต
+
+- ห้ามเอา guard `publicExposureBlocker()` ออก
+  `online-mode=false` + ไม่มี whitelist + เปิด tunnel = ใครก็เข้ามาสวมชื่อเจ้าของและได้ op
+- ห้ามลืม `stop()` tunnel ตอนปิดแอป ไม่งั้นโปรเซส tunnel ค้าง เซิร์ฟยังโดนเปิดอยู่
+  ทั้งที่ปิดแอปไปแล้ว และไม่มี UI ให้ปิด
+- ห้ามโหลด binary (ngrok / cloudflared / JDK) มารันโดยไม่ verify checksum ถ้า upstream มีให้
+
 ### 2.2 Data loss — ผู้ใช้มี world จริงอยู่ในโฟลเดอร์นั้น
 
 - ห้ามเขียนทับ `server.jar` โดยตรง — ต้องโหลดลง `.part` แล้วค่อย `rename` ตอนสำเร็จเท่านั้น
@@ -81,6 +101,14 @@ Stack: React 18 + TypeScript + Vite 7 + Tailwind v4 + shadcn/ui + electron-build
 | 8 | `deletePlugin` ไม่ผ่าน `resolvePath()` | ฟังก์ชันอื่นผ่านหมดแล้วเลยชะล่าใจ | `../../../file` ลบไฟล์นอกโฟลเดอร์ได้ — **แก้ที่เดียว ต้องไล่เช็คทุก caller** |
 | 9 | log ฝั่ง renderer ไม่มีเพดาน | ฝั่ง main cap ไว้แล้วเลยคิดว่าพอ | server ที่รันยาวๆ ทำ array บวมไม่หยุด — **cap ทั้งสองฝั่ง** |
 | 10 | `WriteStream` ไม่มี `.on('error')` | คิดว่า try/catch ครอบพอ | stream error = unhandled event → **แอปหลักดับทั้งตัว** ไม่ใช่แค่ promise reject |
+| 11 | `cloudflared tunnel run --token <token>` | เอาตามตัวอย่างใน doc มาตรงๆ | token โผล่ใน argv ทุกโปรเซสในเครื่องอ่านได้ — **secret ต้องไปทาง env เท่านั้น** |
+| 12 | เก็บ Cloudflare API token ลง `manager-state.json` | คิดว่าเก็บไว้ใช้ต่อรอบหน้า | ไม่มีโค้ดตรงไหนอ่านกลับมาเลย (`getCfToken()` ไม่มี caller) — **เก็บ credential ทั้งบัญชีไว้ฟรีๆ โดยไม่ได้ประโยชน์** |
+| 13 | เปิด tunnel ได้เลยโดยไม่เช็ค `online-mode` | คิดแค่ว่า "ทำให้เพื่อนเข้าได้" | `online-mode=false` + public = ใครก็สวมชื่อเจ้าของได้ — **ฟีเจอร์ที่เปิดสู่อินเทอร์เน็ตต้องมี guard เสมอ** |
+| 14 | ปิดแอปแล้วไม่ `stop()` tunnel | ลืมว่ามันเป็นคนละโปรเซส | tunnel ค้างเปิดเซิร์ฟทิ้งไว้ โดยไม่มี UI ให้ปิด — **ทุก child process ต้องมีทางตายตอนปิดแอป** |
+| 15 | JDK ~200MB โหลดเก็บใน `chunks[]` แล้ว `Buffer.concat` | ก๊อป pattern เดิมจาก `downloadServer` มาใช้ | กิน RAM ~2 เท่าของไฟล์ และไม่ verify checksum ทั้งที่ Adoptium มีให้ — **pattern ที่เคยผิด อย่าก๊อปไปใช้ซ้ำ** |
+| 16 | `getCustomJavaPath()` เดินไล่ทุกไฟล์ใน JDK แบบ sync ทุกครั้งที่เรียก | เขียนให้มัน "หาเจอ" อย่างเดียว | ถูกเรียกทุก `get-java-info` และทุกครั้งที่ start → freeze UI — **sync I/O ใน main process = UI ค้าง** |
+| 17 | `Expand-Archive -LiteralPath '${path}'` | ต่อสตริงใส่ PowerShell | ชื่อผู้ใช้ Windows ที่มี `'` (เช่น `O'Brien`) ทำคำสั่งพัง — **อย่าต่อสตริงเป็นคำสั่ง ใช้ bound parameter** |
+| 18 | `execSync(\`"${customPath}" -version\`)` | อยากได้เร็วๆ | `execSync` = ผ่าน shell + path มีชื่อผู้ใช้อยู่ และ fallback คืนเลข `21.0.6` ที่**แต่งขึ้นเอง** — **อย่ารายงานค่าที่ไม่ได้วัดจริง** |
 
 **Pattern ที่เห็นซ้ำๆ:** พลาดเพราะ *เดา* แล้ว *ไม่ลองรัน*
 ทั้งสิบข้อจับได้ด้วยการรันของจริงหนึ่งครั้ง
@@ -135,6 +163,20 @@ npx tsc --noEmit --skipLibCheck --strict --module esnext --moduleResolution bund
 ---
 
 ## 6. Known gaps — รู้อยู่แล้วว่ายังไม่เสร็จ (อย่าเพิ่งไปแตะถ้าไม่ได้ถูกสั่ง)
+
+- 🔴 **Cloudflare Tunnel ใช้กับ Minecraft ไม่ได้จริง** — ingress ตั้งเป็น `http://localhost:port`
+  แต่ Minecraft เป็น **TCP ดิบ ไม่ใช่ HTTP** และ `*.cfargotunnel.com` **ไม่มี public DNS record**
+  (resolve ได้เฉพาะจากในเครือข่าย Cloudflare) → URL ที่แอปโชว์ ไม่มีผู้เล่นคนไหนต่อได้
+  ถ้าจะทำจริงต้องใช้ Spectrum (เสียเงิน) หรือให้ฝั่งผู้เล่นรัน `cloudflared access tcp` เอง
+  **ตอนนี้ควรซ่อนหรือติดป้าย experimental ไว้ก่อน** — ngrok TCP ใช้ได้ปกติ
+- `store.seedFromLegacy()` เขียนไว้แต่ไม่มีใครเรียก และตอนเปิดแอปยังโหลด dir จาก
+  `server-dir.json` แบบเดิม ไม่ได้อ่านจาก `store.getActiveServer()` → active server ที่เลือกไว้
+  กับ dir ที่โหลดจริงอาจไม่ตรงกัน
+- ngrok / cloudflared binary ยังโหลดมารันโดยไม่ verify checksum (upstream ไม่ publish hash
+  ที่เสถียร) — JDK verify sha256 แล้ว, vanilla server.jar verify sha1 แล้ว
+- `cloudflared` โหลดจาก `releases/latest` = ไม่ pin version ได้ไบนารีอะไรมาก็รัน
+- ทุกครั้งที่ start tunnel แล้วไม่มี `cfTunnel` เก็บไว้ จะไปสร้าง tunnel ใหม่ในบัญชี Cloudflare
+  ของผู้ใช้ และไม่เคยลบทิ้ง
 
 - `getStatus().memory` คืนค่า heap ของ **Electron เอง** ไม่ใช่ของ java
   → การ์ด "Memory Usage" บน Dashboard แสดงเลขผิด

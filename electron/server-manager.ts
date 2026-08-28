@@ -490,16 +490,14 @@ export class ServerManager extends EventEmitter {
 
   getJavaInfo(customPath?: string): { version: string; path: string } {
     if (customPath && fs.existsSync(customPath)) {
-      try {
-        const versionOut = execSync(`"${customPath}" -version`, {
-          encoding: 'utf-8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-        })
-        const match = versionOut.match(/version "([^"]+)"/)
-        return { version: match?.[1] ?? '21.0.6 (Auto Installed)', path: customPath }
-      } catch {
-        return { version: '21.0.6 (Auto Installed)', path: customPath }
-      }
+      // spawnSync with an argv array: execSync runs the string through a shell,
+      // and customPath contains the Windows account name. Reads stderr too,
+      // because that is where `java -version` writes.
+      const probe = spawnSync(customPath, ['-version'], { encoding: 'utf-8' })
+      const output = `${probe.stdout ?? ''}${probe.stderr ?? ''}`
+      const match = output.match(/version "([^"]+)"/)
+      // Report what was actually found - never a hardcoded version string.
+      return { version: match?.[1] ?? 'unknown', path: customPath }
     }
 
     const which = process.platform === 'win32' ? 'where' : 'which'

@@ -20,16 +20,22 @@ export interface CfTunnelState {
 export interface AppState {
   servers: ServerProfile[]
   activeServerId: string | null
-  ngrokToken: string
-  cfToken: string
+  /**
+   * Whether an ngrok authtoken has been entered. The token itself is NOT
+   * persisted - only this flag is, so the UI can show "configured".
+   */
+  ngrokConfigured: boolean
+  /**
+   * The tunnel token (not the account API token) has to survive a restart or
+   * the tunnel cannot be re-run without recreating it on the user's account.
+   */
   cfTunnel: CfTunnelState | null
 }
 
 const DEFAULT_STATE: AppState = {
   servers: [],
   activeServerId: null,
-  ngrokToken: '',
-  cfToken: '',
+  ngrokConfigured: false,
   cfTunnel: null,
 }
 
@@ -48,6 +54,7 @@ export class Store {
   constructor(userDataPath: string) {
     this.file = path.join(userDataPath, 'manager-state.json')
     this.state = { ...DEFAULT_STATE, ...this.read() }
+    this.restrictPermissions()
   }
 
   private read(): Partial<AppState> {
@@ -61,7 +68,22 @@ export class Store {
 
   private persist(): void {
     fs.mkdirSync(path.dirname(this.file), { recursive: true })
-    fs.writeFileSync(this.file, JSON.stringify(this.state, null, 2), 'utf-8')
+    // mode is ignored when the file already exists, hence restrictPermissions().
+    fs.writeFileSync(this.file, JSON.stringify(this.state, null, 2), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    })
+    this.restrictPermissions()
+  }
+
+  /** This file stores a Cloudflare tunnel token; owner-only on POSIX. */
+  private restrictPermissions(): void {
+    if (process.platform === 'win32') return
+    try {
+      if (fs.existsSync(this.file)) fs.chmodSync(this.file, 0o600)
+    } catch {
+      /* best effort */
+    }
   }
 
   getServers(): ServerProfile[] {
@@ -84,6 +106,14 @@ export class Store {
     return record
   }
 
+  updateServer(id: string, patch: Partial<Omit<ServerProfile, 'id' | 'createdAt'>>): ServerProfile | null {
+    const profile = this.state.servers.find((s) => s.id === id)
+    if (!profile) return null
+    Object.assign(profile, patch, { lastUsedAt: new Date().toISOString() })
+    this.persist()
+    return profile
+  }
+
   removeServer(id: string): ServerProfile | null {
     const index = this.state.servers.findIndex((s) => s.id === id)
     if (index === -1) return null
@@ -104,21 +134,12 @@ export class Store {
     return profile
   }
 
-  getNgrokToken(): string {
-    return this.state.ngrokToken
+  isNgrokConfigured(): boolean {
+    return this.state.ngrokConfigured
   }
 
-  setNgrokToken(token: string): void {
-    this.state.ngrokToken = token.trim()
-    this.persist()
-  }
-
-  getCfToken(): string {
-    return this.state.cfToken
-  }
-
-  setCfToken(token: string): void {
-    this.state.cfToken = token.trim()
+  setNgrokConfigured(configured: boolean): void {
+    this.state.ngrokConfigured = configured
     this.persist()
   }
 

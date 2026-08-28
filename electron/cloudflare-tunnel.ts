@@ -257,8 +257,12 @@ export class CloudflareTunnelManager {
       console.error('[cloudflare-tunnel] route config failed:', (err as Error).message)
     }
 
-    const child = spawn(bin, ['tunnel', 'run', '--token', tunnel.tunnelToken], {
+    // TUNNEL_TOKEN rather than --token: a running process's command line is
+    // readable by other processes, and this token is the full credential for
+    // the tunnel - anyone holding it can attach their own connector.
+    const child = spawn(bin, ['tunnel', 'run'], {
       windowsHide: true,
+      env: { ...process.env, TUNNEL_TOKEN: tunnel.tunnelToken },
     })
     this.child = child
     this.status.running = true
