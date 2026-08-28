@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import logoUrl from '/logo.png'
 import type { ComponentType } from 'react'
-import { Blocks, LayoutDashboard, Terminal, Settings, Puzzle, Folder, Network, Server, ChevronDown, Trash2 } from 'lucide-react'
+import { LayoutDashboard, Terminal, Settings, Puzzle, Folder, Network, Server, ChevronDown, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
@@ -99,9 +100,7 @@ export default function Sidebar({
       {/* App header */}
       <div className="flex items-center justify-between px-4 py-4">
         <div className="flex items-center gap-2">
-          <div className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Blocks className="size-4" />
-          </div>
+          <img src={logoUrl} alt="Logo" className="size-8 rounded-lg object-cover" />
           <div className="leading-tight">
             <p className="text-sm font-semibold">MC Manager</p>
             <p className="text-[11px] text-muted-foreground">Server Studio</p>

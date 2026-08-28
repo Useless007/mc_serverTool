@@ -49,6 +49,7 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     title: 'Minecraft Server Manager',
+    icon: path.join(__dirname, '../logo.ico'),
     backgroundColor: '#0a0a14',
     autoHideMenuBar: true,
     webPreferences: {

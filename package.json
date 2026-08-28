@@ -53,6 +53,7 @@
     "autoprefixer": "^10.5.4",
     "electron": "^44.0.0",
     "electron-builder": "^25.0.5",
+    "png2icons": "^2.0.1",
     "postcss": "^8.5.26",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.5.4",
@@ -63,6 +64,7 @@
   "build": {
     "appId": "com.minecraft.server-manager",
     "productName": "Minecraft Server Manager",
+    "icon": "logo.ico",
     "directories": {
       "output": "release"
     },
@@ -71,11 +73,20 @@
       "dist-electron/**/*"
     ],
     "win": {
-      "target": "nsis"
+      "icon": "logo.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "logo.ico",
+      "uninstallerIcon": "logo.ico",
+      "installerHeaderIcon": "logo.ico"
     }
   }
 }
