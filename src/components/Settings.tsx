@@ -7,7 +7,6 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { BOOLEAN_KEYS } from '@/lib/format'
 
 interface SettingsProps {
   onRefresh: () => void
@@ -268,7 +267,7 @@ export default function Settings({ onRefresh }: SettingsProps) {
                     {section.keys.map((key) => {
                       const value = config[key]
                       if (value === undefined) return null
-                      const isBool = BOOLEAN_KEYS.has(key) || value === 'true' || value === 'false'
+                      const isBool = value === 'true' || value === 'false'
                       if (isBool) {
                         return (
                           <div key={key} className="flex items-center justify-between rounded-lg border p-3">
@@ -295,6 +294,8 @@ export default function Settings({ onRefresh }: SettingsProps) {
                           </Label>
                           <Input
                             id={`input-${key}`}
+                            type={key.endsWith('password') ? 'password' : 'text'}
+                            autoComplete="off"
                             value={value}
                             onChange={(e) => setValue(key, e.target.value)}
                             className="font-mono"

@@ -8,6 +8,8 @@ import { Badge } from '@/components/ui/badge'
 import { colorizeLogLine } from '@/lib/format'
 import type { ServerStatus } from '@/types'
 
+const MAX_LOG_LINES = 4000
+
 interface ConsoleProps {
   status: ServerStatus
 }
@@ -20,13 +22,18 @@ export default function Console({ status }: ConsoleProps) {
   useEffect(() => {
     window.electronAPI.getConsoleLogs().then(setLogs).catch(() => {})
     const unsub = window.electronAPI.onConsoleOutput((line) => {
-      setLogs((prev) => [...prev, line])
+      // Main caps its buffer at 4000 lines; cap here too or a busy server grows
+      // this array without bound for as long as the app stays open.
+      setLogs((prev) => {
+        const next = [...prev, line]
+        return next.length > MAX_LOG_LINES ? next.slice(-MAX_LOG_LINES) : next
+      })
     })
     return unsub
   }, [])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    bottomRef.current?.scrollIntoView({ behavior: 'auto' })
   }, [logs])
 
   const handleSend = async () => {
